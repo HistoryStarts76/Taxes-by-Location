@@ -1,0 +1,230 @@
+# === NYC TAX CALCULATOR – ZOOMS TO YOUR SALARY ($1K–$200K default) ===
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.ticker import ScalarFormatter
+import ipywidgets as widgets
+from IPython.display import display, clear_output
+
+# ========================================
+# 1. TAX BRACKETS (2025, SINGLE)
+# ========================================
+federal_brackets = pd.DataFrame([
+    [0,       11925,   0.10],
+    [11926,   48475,   0.12],
+    [48476,  103350,   0.22],
+    [103351, 197300,   0.24],
+    [197301, 250525,   0.32],
+    [250526, 626350,   0.35],
+    [626351, np.inf,   0.37]
+], columns=['lower', 'upper', 'rate'])
+
+state_brackets = pd.DataFrame([
+    [0,        8500,   0.040],
+    [8501,    11700,   0.045],
+    [11701,   13900,   0.0525],
+    [13901,   80650,   0.055],
+    [80651,  215400,   0.060],
+    [215401, 1077550,  0.0685],
+    [1077551, 5000000, 0.0965],
+    [5000001,25000000, 0.103],
+    [25000001, np.inf, 0.109]
+], columns=['lower', 'upper', 'rate'])
+
+nyc_brackets = pd.DataFrame([
+    [0,     12000, 0.03078],
+    [12001, 25000, 0.03762],
+    [25001, 50000, 0.03819],
+    [50001, np.inf, 0.03876]
+], columns=['lower', 'upper', 'rate'])
+
+# ========================================
+# 2. TAX FUNCTIONS
+# ========================================
+def compute_tax(income, brackets):
+    tax = 0.0
+    prev_upper = 0
+    for _, row in brackets.iterrows():
+        lower = max(row['lower'], prev_upper)
+        upper = row['upper']
+        rate = row['rate']
+        if income <= prev_upper: break
+        taxable = min(income, upper) - lower
+        if taxable > 0:
+            tax += taxable * rate
+        prev_upper = upper
+        if upper == np.inf: break
+    return tax
+
+def get_marginal_rate(income, brackets):
+    for _, row in brackets.iterrows():
+        if income <= row['upper']:
+            return row['rate']
+    return brackets.iloc[-1]['rate']
+
+# ========================================
+# 3. WIDGETS
+# ========================================
+income_input = widgets.Text(
+    value='75000',
+    placeholder='e.g. 100000',
+    description='Income ($):',
+    style={'description_width': 'initial'},
+    layout=widgets.Layout(width='300px')
+)
+
+calc_button = widgets.Button(
+    description='Calculate',
+    button_style='success',
+    layout=widgets.Layout(width='150px')
+)
+
+output = widgets.Output()
+
+# ========================================
+# 4. DYNAMIC RANGE LOGIC
+# ========================================
+def get_income_range(user_income):
+    if user_income <= 200_000:
+        return 1_000, 200_000  # Focus on normal salaries
+    else:
+        # Expand to show up to 5x your income, but cap at $5M
+        return max(1_000, user_income * 0.2), min(5_000_000, user_income * 5)
+
+# ========================================
+# 5. UPDATE FUNCTION
+# ========================================
+def update_all(change=None):
+    with output:
+        clear_output(wait=True)
+        try:
+            income = float(income_input.value.replace(',', '').strip())
+            if income < 0:
+                print("Enter a positive number.")
+                return
+        except:
+            print("Invalid input. Use numbers only.")
+            return
+
+        # Compute taxes
+        fed_tax = compute_tax(income, federal_brackets)
+        state_tax = compute_tax(income, state_brackets)
+        nyc_tax = compute_tax(income, nyc_brackets)
+        total_tax = fed_tax + state_tax + nyc_tax
+        net_income = income - total_tax
+        effective_rate = total_tax / income * 100 if income > 0 else 0
+
+        fed_marg = get_marginal_rate(income, federal_brackets) * 100
+        state_marg = get_marginal_rate(income, state_brackets) * 100
+        nyc_marg = get_marginal_rate(income, nyc_brackets) * 100
+        total_marg = fed_marg + state_marg + nyc_marg
+
+        # Dynamic x-range
+        min_inc, max_inc = get_income_range(income)
+        incomes = np.logspace(np.log10(min_inc), np.log10(max_inc), 300)
+        total_taxes = [compute_tax(i, federal_brackets) + 
+                       compute_tax(i, state_brackets) + 
+                       compute_tax(i, nyc_brackets) for i in incomes]
+        net_incomes = [i - t for i, t in zip(incomes, total_taxes)]
+
+        # === PLOT ===
+        fig = plt.figure(figsize=(13, 10))
+        gs = fig.add_gridspec(3, 2, width_ratios=[3, 1], height_ratios=[1.8, 1.2, 1.2],
+                              hspace=0.5, wspace=0.3)
+
+        # 1. Stacked Tax
+        ax1 = fig.add_subplot(gs[0, 0])
+        fed_t = [compute_tax(i, federal_brackets) for i in incomes]
+        state_t = [compute_tax(i, state_brackets) for i in incomes]
+        nyc_t = [compute_tax(i, nyc_brackets) for i in incomes]
+        ax1.stackplot(incomes, fed_t, state_t, nyc_t,
+                      labels=['Federal', 'NY State', 'NYC'],
+                      colors=['#1f77b4', '#ff7f0e', '#2ca02c'], alpha=0.85)
+        ax1.set_xscale('log')
+        ax1.set_title('Tax Composition', fontweight='bold', fontsize=13)
+        ax1.set_ylabel('Tax Paid ($)')
+        ax1.axvline(income, color='red', linestyle='--', linewidth=2.5)
+        ax1.legend(loc='upper left')
+        ax1.grid(True, alpha=0.3)
+        ax1.xaxis.set_major_formatter(ScalarFormatter())
+        ax1.set_xticks([1e3, 5e3, 1e4, 2.5e4, 5e4, 1e5, 2e5, 5e5, 1e6, 5e6])
+        ax1.set_xticklabels(['$1K','$5K','$10K','$25K','$50K','$100K','$200K','$500K','$1M','$5M'])
+        ax1.set_xlim(min_inc, max_inc)
+
+        # 2. GROSS vs NET (ZOOMED IN!)
+        ax2 = fig.add_subplot(gs[1, 0])
+        ax2.plot(incomes, incomes, label='Gross Income', color='#2ca02c', linewidth=3.5)
+        ax2.plot(incomes, net_incomes, label='Net Income', color='#1f77b4', linewidth=3.5)
+        ax2.fill_between(incomes, net_incomes, incomes, color='lightcoral', alpha=0.4, label='Total Tax')
+        ax2.set_xscale('log')
+        ax2.set_title('Gross vs. Net Income (Take-Home Pay)', fontweight='bold', fontsize=13)
+        ax2.set_ylabel('Income ($)')
+        ax2.axvline(income, color='red', linestyle='--', linewidth=2.5)
+        ax2.legend(loc='upper left')
+        ax2.grid(True, alpha=0.3)
+        ax2.xaxis.set_major_formatter(ScalarFormatter())
+        ax2.set_xticks([1e3, 5e3, 1e4, 2.5e4, 5e4, 1e5, 2e5, 5e5, 1e6, 5e6])
+        ax2.set_xticklabels(['$1K','$5K','$10K','$25K','$50K','$100K','$200K','$500K','$1M','$5M'])
+        ax2.set_xlim(min_inc, max_inc)
+
+        # 3. Marginal Rate
+        ax3 = fig.add_subplot(gs[2, 0])
+        marg_rates = [get_marginal_rate(i, federal_brackets) +
+                      get_marginal_rate(i, state_brackets) +
+                      get_marginal_rate(i, nyc_brackets) for i in incomes]
+        ax3.plot(incomes, np.array(marg_rates)*100, color='purple', linewidth=3.5)
+        ax3.set_xscale('log')
+        ax3.set_title('Combined Marginal Tax Rate', fontweight='bold', fontsize=13)
+        ax3.set_ylabel('Rate (%)')
+        ax3.axvline(income, color='red', linestyle='--', linewidth=2.5)
+        ax3.grid(True, alpha=0.3)
+        ax3.xaxis.set_major_formatter(ScalarFormatter())
+        ax3.set_xticks([1e3, 5e3, 1e4, 2.5e4, 5e4, 1e5, 2e5, 5e5, 1e6, 5e6])
+        ax3.set_xticklabels(['$1K','$5K','$10K','$25K','$50K','$100K','$200K','$500K','$1M','$5M'])
+        ax3.set_xlim(min_inc, max_inc)
+
+        # 4. Clean Summary
+        ax4 = fig.add_subplot(gs[:, 1])
+        ax4.axis('off')
+        summary = f"""
+YOUR TAX SUMMARY
+
+Income (Gross):     ${income:,.0f}
+
+Federal Tax:        ${fed_tax:,.0f}
+  → {fed_marg:.1f}% bracket
+
+NY State Tax:       ${state_tax:,.0f}
+  → {state_marg:.2f}% bracket
+
+NYC Tax:            ${nyc_tax:,.0f}
+  → {nyc_marg:.3f}% bracket
+
+TOTAL TAX:          ${total_tax:,.0f}
+
+NET INCOME:         ${net_income:,.0f}
+
+Effective Rate:     {effective_rate:.2f}%
+Marginal Rate:      {total_marg:.2f}%
+  (next $1 taxed here)
+        """.strip()
+        ax4.text(0.05, 0.95, summary, transform=ax4.transAxes, fontsize=11.5,
+                 verticalalignment='top', fontfamily='monospace',
+                 bbox=dict(boxstyle="round,pad=1", facecolor="#f8f8f8", edgecolor="#ddd"))
+
+        plt.suptitle(f'NYC Income Tax – Your Salary: ${income:,.0f}', 
+                     fontsize=16, fontweight='bold')
+        plt.show()
+
+# ========================================
+# 6. CONNECT & RUN
+# ========================================
+calc_button.on_click(update_all)
+ui = widgets.HBox([income_input, calc_button])
+
+print("Enter your income and click Calculate – chart auto-zooms to your range!")
+display(ui)
+display(output)
+
+# Auto-run on load
+update_all()
